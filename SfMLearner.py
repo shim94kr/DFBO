@@ -31,17 +31,21 @@ class SfMLearner(object):
             tgt_feature_map = vgg_extractor(tgt_image, reuse=False) # batch * H * W * feat_dim
             for i in range(opt.num_source):
                 src_feature_map = vgg_extractor(src_image_stack[:,:,:,3*i:3*(i+1)], reuse=True)
-                pred_exp_logit_1 = mask_extractor(src_feature_map, do_exp=(opt.explain_reg_weight > 0), reuse=tf.AUTO_REUSE)
+                if opt.explain_reg_weight > 0:
+                    pred_exp_logit_1 = mask_extractor(src_feature_map, do_exp=(opt.explain_reg_weight > 0), reuse=tf.AUTO_REUSE)
                 for j in range(opt.num_scales) :
                     src_feature_map[j] = tf.expand_dims(src_feature_map[j], 0)
-                    pred_exp_logit_1[j] = tf.expand_dims(pred_exp_logit_1[j], 0)
+                    if opt.explain_reg_weight > 0:
+                        pred_exp_logit_1[j] = tf.expand_dims(pred_exp_logit_1[j], 0)
                 if i==0 :
                     src_feature_map_stack = src_feature_map
-                    pred_exp_logits = pred_exp_logit_1
+                    if opt.explain_reg_weight > 0:
+                        pred_exp_logits = pred_exp_logit_1
                 else :
                     for j in range(opt.num_scales):
                         src_feature_map_stack[j] = tf.concat([src_feature_map_stack[j], src_feature_map[j]], axis=0)
-                        pred_exp_logits[j] = tf.concat([pred_exp_logits[j], pred_exp_logit_1[j]], axis=0)
+                        if opt.explain_reg_weight > 0:
+                            pred_exp_logits[j] = tf.concat([pred_exp_logits[j], pred_exp_logit_1[j]], axis=0)
 
 
         with tf.name_scope("pose_and_explainability_prediction"):
@@ -64,15 +68,15 @@ class SfMLearner(object):
                 if opt.explain_reg_weight > 0:
                     ref_exp_mask = self.get_reference_explain_mask(s)
                 batch_size, H, W, feat_dim = tgt_feature_map[s].get_shape().as_list()
-                grid_tgt = make_grid(batch_size, H, W)
-                grid_tgt_rs = tf.reshape(grid_tgt, [batch_size, H*W, 3])
+                grid_src = make_grid(batch_size, H, W)
+                grid_src_rs = tf.reshape(grid_src, [batch_size, H*W, 3])
 
                 curr_tgt_image = tf.image.resize_area(tgt_image,
                     [int(opt.img_height/(2**s)), int(opt.img_width/(2**s))])
                 curr_src_image_stack = tf.image.resize_area(src_image_stack,
                     [int(opt.img_height/(2**s)), int(opt.img_width/(2**s))])
 
-                tgt_feature = tf.nn.l2_normalize(tgt_feature_map[s], 3)
+                tgt_feature_norm = tf.nn.l2_normalize(tgt_feature_map[s], 3)
                 y_max = tf.cast(H - 1, 'float32')
                 x_max = tf.cast(W - 1, 'float32')
                 zero = tf.zeros([1], dtype='float32')
@@ -84,14 +88,14 @@ class SfMLearner(object):
                                                       ref_exp_mask)
                         curr_exp = softmax(curr_exp_logits, 3)
 
-                    rowxH = grid_tgt[:, :, :, 0] + motion_map[s][:, :, :, i*2]
-                    colxW = grid_tgt[:, :, :, 1] + motion_map[s][:, :, :, i*2+1]
+                    rowxH = grid_src[:, :, :, 0] + motion_map[s][:, :, :, i*2]
+                    colxW = grid_src[:, :, :, 1] + motion_map[s][:, :, :, i*2+1]
                     rowxH_safe = tf.clip_by_value(rowxH, zero, x_max)
                     colxW_safe = tf.clip_by_value(colxW, zero, y_max)
-                    grid_src = tf.stack([rowxH_safe, colxW_safe], axis=3)  # B * H * W * 2
+                    grid_tgt_from_src = tf.stack([rowxH_safe, colxW_safe], axis=3)  # B * H * W * 2
                     src_feature_norm = tf.nn.l2_normalize(src_feature_map_stack[s][i], 3)  # B * H * W * feat_dim
-                    src_feature_from_tgt = bilinear_sampler(src_feature_norm, grid_src)
-                    matching_error = tf.abs(tgt_feature - src_feature_from_tgt) # s, batch * feat_num * feat_dim -> B * feat_num
+                    tgt_feature_from_src = bilinear_sampler(tgt_feature_norm, grid_tgt_from_src)
+                    matching_error = tf.abs(tgt_feature_from_src - src_feature_norm) # s, batch * feat_num * feat_dim -> B * feat_num
 
                     if opt.explain_reg_weight > 0:
                         matching_loss = tf.reduce_mean(matching_error * tf.expand_dims(curr_exp[:,:,:,1], -1), axis = 3)
@@ -107,8 +111,8 @@ class SfMLearner(object):
                     inv_intrinsic = tf.matrix_inverse(intrinsics[:, s, :, :])
                     fundamental_matrix = tf.matmul(tf.matmul(tf.transpose(inv_intrinsic, [0, 2, 1]), essential_matrix), inv_intrinsic) # B * 3 * 3
 
-                    grid_src_cct1 = tf.concat([grid_src, tf.ones([batch_size, H, W, 1])], axis = 3)
-                    grid_src_rs = tf.reshape(grid_src_cct1, [batch_size, H*W, 3])
+                    grid_tgt_cct1 = tf.concat([grid_tgt_from_src, tf.ones([batch_size, H, W, 1])], axis = 3)
+                    grid_tgt_rs = tf.reshape(grid_tgt_cct1, [batch_size, H*W, 3])
                     epiline1 = tf.abs(tf.matmul(grid_src_rs, fundamental_matrix)) # B * HW * 3
                     epipolar_error = epiline1 * grid_tgt_rs # B * HW * 3
                     epipolar_error_rs = tf.reshape(epipolar_error, [batch_size, H, W, 3])

@@ -5,7 +5,7 @@ from tensorflow.contrib.layers.python.layers import utils
 import numpy as np
 
 # Range of disparity/inverse depth values
-DISP_SCALING = 10
+DISP_SCALING = 15
 MIN_DISP = 0.5
 FEATURE_NUM = 4
 SOURCE_NUM = 4
@@ -47,30 +47,26 @@ def pose_motion_net(tgt_image, src_image_stack, is_training=True):
                 upcnv5 = slim.conv2d_transpose(cnv5, 256, [3, 3], stride=2, scope='upcnv5')
 
                 upcnv4 = slim.conv2d_transpose(upcnv5, 128, [3, 3], stride=2, scope='upcnv4')
-                shift4_prev = DISP_SCALING * slim.conv2d(upcnv4, num_source * 2, [3, 3], stride=1, scope='shift4',
+                shift4 = DISP_SCALING * slim.conv2d(upcnv4, num_source * 2, [3, 3], stride=1, scope='shift4',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
-                shift4 = tf.sign(shift4_prev) * MIN_DISP + shift4_prev
                 shift4_up = tf.image.resize_bilinear(shift4, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
 
                 upcnv3 = slim.conv2d_transpose(upcnv4, 64, [3, 3], stride=2, scope='upcnv3')
                 shift3_in = tf.concat([shift4_up, upcnv3], axis=3)
-                shift3_prev = DISP_SCALING * slim.conv2d(shift3_in, num_source * 2, [3, 3], stride=1, scope='shift3',
+                shift3 = DISP_SCALING * slim.conv2d(shift3_in, num_source * 2, [3, 3], stride=1, scope='shift3',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
-                shift3 = tf.sign(shift3_prev) * MIN_DISP * 2 + shift3_prev
                 shift3_up = tf.image.resize_bilinear(shift3, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
 
                 upcnv2 = slim.conv2d_transpose(shift3, 32, [5, 5], stride=2, scope='upcnv2')
                 shift2_in = tf.concat([shift3_up, upcnv2], axis=3)
-                shift2_prev = DISP_SCALING * slim.conv2d(shift2_in, num_source * 2, [5, 5], stride=1, scope='shift2',
+                shift2 = DISP_SCALING * slim.conv2d(shift2_in, num_source * 2, [5, 5], stride=1, scope='shift2',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
-                shift2 = tf.sign(shift2_prev) * MIN_DISP * 4 + shift2_prev
                 shift2_up = tf.image.resize_bilinear(shift2, [np.int(H), np.int(W)])  # B * H * W * 2
 
                 upcnv1 = slim.conv2d_transpose(upcnv2, 16, [7, 7], stride=2, scope='upcnv1')
                 shift1_in = tf.concat([shift2_up, upcnv1], axis = 3)
-                shift1_prev = DISP_SCALING * slim.conv2d(shift1_in, num_source * 2, [7, 7], stride=1, scope='shift1',
+                shift1 = DISP_SCALING * slim.conv2d(shift1_in, num_source * 2, [7, 7], stride=1, scope='shift1',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
-                shift1 = tf.sign(shift1_prev) * MIN_DISP * 8 + shift1_prev
         end_points = utils.convert_collection_to_dict(end_points_collection)
         #return pose_final, end_points
         return pose_final, [shift1, shift2, shift3, shift4], end_points
