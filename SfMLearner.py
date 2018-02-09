@@ -103,11 +103,11 @@ class SfMLearner(object):
                         matching_loss = tf.reduce_mean(matching_error, axis = 3)
                     matching_loss_debug += tf.reduce_mean(matching_loss)
 
-                    rot1 = pose_vec2mat(pred_poses[:, i, :])[:, :3, 0]  # B * 3
-                    rot2 = pose_vec2mat(pred_poses[:, i, :])[:, :3, 1]  # B * 3
-                    rot3 = pose_vec2mat(pred_poses[:, i, :])[:, :3, 2]  # B * 3
+                    rot1 = pose_vec2mat(pred_poses[:, i, :])[:, 0, :3]  # B * 3
+                    rot2 = pose_vec2mat(pred_poses[:, i, :])[:, 1, :3]  # B * 3
+                    rot3 = pose_vec2mat(pred_poses[:, i, :])[:, 2, :3]  # B * 3
                     trans = pose_vec2mat(pred_poses[:, i, :])[:, :3, 3]  # B * 3
-                    essential_matrix  = tf.stack([tf.cross(rot1, trans), tf.cross(rot2, trans), tf.cross(rot3, trans)], axis=2)  # B * 3 * 3
+                    essential_matrix  = tf.stack([tf.cross(rot1, trans), tf.cross(rot2, trans), tf.cross(rot3, trans)], axis=1)  # B * 3 * 3
                     inv_intrinsic = tf.matrix_inverse(intrinsics[:, s, :, :])
                     fundamental_matrix = tf.matmul(tf.matmul(tf.transpose(inv_intrinsic, [0, 2, 1]), essential_matrix), inv_intrinsic) # B * 3 * 3
 
