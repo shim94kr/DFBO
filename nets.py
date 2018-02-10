@@ -6,6 +6,7 @@ import numpy as np
 
 # Range of disparity/inverse depth values
 DISP_SCALING = 3
+UP_SCALING = 3
 MIN_DISP = 0
 FEATURE_NUM = 4
 SOURCE_NUM = 4
@@ -106,16 +107,16 @@ def mask_extractor (feature_map, num_source = SOURCE_NUM, do_exp=False, reuse=Fa
 
         if do_exp:
             with tf.variable_scope('exp', reuse=reuse):
-                mask4 = slim.conv2d(feature_map[3], 1, [1, 1], stride=1, scope='mask4', normalizer_fn=None, activation_fn=None)
-                mask4_up = tf.image.resize_bilinear(mask4, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
+                mask4 = slim.conv2d(feature_map[3], 1, [1, 1], stride=1, scope='mask4')
+                mask4_up = tf.image.resize_nearest_neighbor(mask4, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
 
-                mask3 = tf.sigmoid(mask4_up) * slim.conv2d(feature_map[2], 1, [1, 1], stride=1, scope='mask3', normalizer_fn=None, activation_fn=None)
-                mask3_up = tf.image.resize_bilinear(mask3, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
+                mask3 = mask4_up * UP_SCALING + slim.conv2d(feature_map[2], 1, [1, 1], stride=1, scope='mask3')
+                mask3_up = tf.image.resize_nearest_neighbor(mask3, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
 
-                mask2 = tf.sigmoid(mask3_up) * slim.conv2d(feature_map[1], 1, [1, 1], stride=1, scope='mask2', normalizer_fn=None, activation_fn=None)
-                mask2_up = tf.image.resize_bilinear(mask2, [np.int(H), np.int(W)])  # B * H * W * 2
+                mask2 = mask3_up * UP_SCALING + slim.conv2d(feature_map[1], 1, [1, 1], stride=1, scope='mask2')
+                mask2_up = tf.image.resize_nearest_neighbor(mask2, [np.int(H), np.int(W)])  # B * H * W * 2
 
-                mask1= tf.sigmoid(mask2_up) * slim.conv2d(feature_map[0], 1, [1, 1], stride=1, scope='mask1', normalizer_fn=None, activation_fn=None)
+                mask1 = mask2_up * UP_SCALING + slim.conv2d(feature_map[0], 1, [1, 1], stride=1, scope='mask1')
 
         else:
             mask1 = None
