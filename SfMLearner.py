@@ -32,7 +32,7 @@ class SfMLearner(object):
             for i in range(opt.num_source):
                 src_feature_map = vgg_extractor(src_image_stack[:,:,:,3*i:3*(i+1)], reuse=True)
                 if opt.explain_reg_weight > 0:
-                    pred_exp_logit_1 = mask_extractor(src_feature_map[4], do_exp=(opt.explain_reg_weight > 0), reuse=tf.AUTO_REUSE)
+                    pred_exp_logit_1 = mask_extractor(src_feature_map, do_exp=(opt.explain_reg_weight > 0), reuse=tf.AUTO_REUSE)
                 for j in range(opt.num_scales) :
                     src_feature_map[j] = tf.expand_dims(src_feature_map[j], 0)
                     if opt.explain_reg_weight > 0:
@@ -50,7 +50,7 @@ class SfMLearner(object):
 
         with tf.name_scope("pose_and_explainability_prediction"):
             # pred_poses, pred_exp_logits, pose_exp_net_endpoints = \
-            pred_poses,motion_map, pose_exp_net_endpoints = \
+            pred_poses, motion_map, pose_exp_net_endpoints = \
                 pose_motion_net(tgt_image,
                              src_image_stack,
                              is_training=True)
@@ -82,11 +82,10 @@ class SfMLearner(object):
                 zero = tf.zeros([1], dtype='float32')
                 for i in range(opt.num_source):
                     if opt.explain_reg_weight > 0:
-                        curr_exp_logits = pred_exp_logits[s][i]
+                        curr_exp = tf.sigmoid(pred_exp_logits[s][i])
                         exp_loss += opt.explain_reg_weight * \
-                            self.compute_exp_reg_loss(curr_exp_logits,
+                            self.compute_exp_reg_loss(curr_exp,
                                                       ref_exp_mask)
-                        curr_exp = softmax(curr_exp_logits, 3)
 
                     rowxH = grid_src[:, :, :, 0] + motion_map[s][:, :, :, i*2]
                     colxW = grid_src[:, :, :, 1] + motion_map[s][:, :, :, i*2+1]
@@ -98,7 +97,7 @@ class SfMLearner(object):
                     matching_error = tf.abs(tgt_feature_from_src - src_feature_norm) # s, batch * feat_num * feat_dim -> B * feat_num
 
                     if opt.explain_reg_weight > 0:
-                        matching_loss = tf.reduce_mean(matching_error * tf.expand_dims(curr_exp[:,:,:,1], -1), axis = 3)
+                        matching_loss = tf.reduce_mean(matching_error * tf.expand_dims(curr_exp[:,:,:,0], -1), axis = 3)
                     else:
                         matching_loss = tf.reduce_mean(matching_error, axis = 3)
                     matching_loss_debug += tf.reduce_mean(matching_loss)
@@ -118,7 +117,7 @@ class SfMLearner(object):
                     epipolar_error_rs = tf.reshape(epipolar_error, [batch_size, H, W, 3])
 
                     if opt.explain_reg_weight > 0:
-                        epipolar_loss = tf.reduce_mean(epipolar_error_rs * tf.expand_dims(curr_exp[:,:,:,1], -1), axis = 3)
+                        epipolar_loss = tf.reduce_mean(epipolar_error_rs * tf.expand_dims(curr_exp[:,:,:,0], -1), axis = 3)
                     else:
                         epipolar_loss = tf.reduce_mean(epipolar_error_rs, axis = 3)
 
@@ -127,9 +126,9 @@ class SfMLearner(object):
 
                     if opt.explain_reg_weight > 0:
                         if i==0:
-                            exp_mask_stack = tf.expand_dims(curr_exp[:,:,:,1], -1)
+                            exp_mask_stack = tf.expand_dims(curr_exp[:,:,:,0], -1)
                         else:
-                            exp_mask_stack = tf.concat([exp_mask_stack, tf.expand_dims(curr_exp[:,:,:,1], -1)], axis=3)
+                            exp_mask_stack = tf.concat([exp_mask_stack, tf.expand_dims(curr_exp[:,:,:,0], -1)], axis=3)
                 tgt_image_all.append(curr_tgt_image)
                 src_image_stack_all.append(curr_src_image_stack)
                 if opt.explain_reg_weight > 0:
@@ -168,6 +167,7 @@ class SfMLearner(object):
         self.exp_mask_stack_all = exp_mask_stack_all
 
     def compute_exp_reg_loss(self, pred, ref):
+        pred = tf.stack([1-pred, pred], axis=3)
         l = tf.nn.softmax_cross_entropy_with_logits(
             labels=tf.reshape(ref, [-1, 2]),
             logits=tf.reshape(pred, [-1, 2]))

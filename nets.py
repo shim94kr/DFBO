@@ -5,7 +5,7 @@ from tensorflow.contrib.layers.python.layers import utils
 import numpy as np
 
 # Range of disparity/inverse depth values
-DISP_SCALING = 15
+DISP_SCALING = 3
 MIN_DISP = 0
 FEATURE_NUM = 4
 SOURCE_NUM = 4
@@ -52,23 +52,23 @@ def pose_motion_net(tgt_image, src_image_stack, is_training=True):
                 shift4_up = tf.image.resize_bilinear(shift4, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
 
                 upcnv3 = slim.conv2d_transpose(upcnv4, 64, [3, 3], stride=2, scope='upcnv3')
-                icnv3 = tf.concat([shift4_up, cnv2, upcnv3], axis=3)
+                icnv3 = tf.concat([cnv2, upcnv3], axis=3)
                 shift3_in = slim.conv2d(icnv3, 64, [3, 3], stride=1, scope='icnv3')
-                shift3 = DISP_SCALING * slim.conv2d(shift3_in, num_source * 2, [3, 3], stride=1, scope='shift3',
+                shift3 = shift4_up * 2 + DISP_SCALING * slim.conv2d(shift3_in, num_source * 2, [3, 3], stride=1, scope='shift3',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
                 shift3_up = tf.image.resize_bilinear(shift3, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
 
                 upcnv2 = slim.conv2d_transpose(upcnv3, 32, [3, 3], stride=2, scope='upcnv2')
-                icnv2 = tf.concat([shift3_up, cnv1, upcnv2], axis=3)
+                icnv2 = tf.concat([cnv1, upcnv2], axis=3)
                 shift2_in = slim.conv2d(icnv2, 32, [3, 3], stride=1, scope='icnv2')
-                shift2 = DISP_SCALING * slim.conv2d(shift2_in, num_source * 2, [5, 5], stride=1, scope='shift2',
+                shift2 = shift3_up * 2 + DISP_SCALING * slim.conv2d(shift2_in, num_source * 2, [5, 5], stride=1, scope='shift2',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
                 shift2_up = tf.image.resize_bilinear(shift2, [np.int(H), np.int(W)])  # B * H * W * 2
 
                 upcnv1 = slim.conv2d_transpose(upcnv2, 16, [3, 3], stride=2, scope='upcnv1')
-                icnv1 = tf.concat([shift2_up, upcnv1], axis = 3)
+                icnv1 = tf.concat([tgt_image, upcnv1], axis = 3)
                 shift1_in = slim.conv2d(icnv1, 16, [3, 3], stride=1, scope='icnv1')
-                shift1 = DISP_SCALING * slim.conv2d(shift1_in, num_source * 2, [7, 7], stride=1, scope='shift1',
+                shift1 = shift2_up * 2 + DISP_SCALING * slim.conv2d(shift1_in, num_source * 2, [7, 7], stride=1, scope='shift1',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
         end_points = utils.convert_collection_to_dict(end_points_collection)
         #return pose_final, end_points
@@ -92,16 +92,13 @@ def vgg_extractor(tgt_image, reuse=False):
 
         conv4_1 = slim.conv2d(pool3, 512, [3, 3], scope='conv4/conv4_1')
         conv4_2 = slim.conv2d(conv4_1, 512, [3, 3], scope='conv4/conv4_2')
-        pool4 = slim.max_pool2d(conv4_2, [2, 2], scope='pool4')
 
-        conv5_1 = slim.conv2d(pool4, 512, [3, 3], scope='conv5/conv5_1')
-        conv5_2 = slim.conv2d(conv5_1, 512, [3, 3], scope='conv5/conv5_2')
-        conv5_3 = slim.conv2d(conv5_2, 512, [3, 3], scope='conv5/conv5_3')
-
-        return [conv1_2, conv2_2, conv3_2, conv4_2, conv5_3]
+        return [conv1_2, conv2_2, conv3_2, conv4_2]
 
 
 def mask_extractor (feature_map, num_source = SOURCE_NUM, do_exp=False, reuse=False):
+    H = feature_map[0].get_shape()[1].value
+    W = feature_map[0].get_shape()[2].value
     with slim.arg_scope([slim.conv2d],
                         normalizer_fn=None,
                         activation_fn=None):
@@ -109,21 +106,16 @@ def mask_extractor (feature_map, num_source = SOURCE_NUM, do_exp=False, reuse=Fa
 
         if do_exp:
             with tf.variable_scope('exp', reuse=reuse):
-                upcnv4 = slim.conv2d_transpose(feature_map, 128, [3, 3], stride=2, scope='upcnv4')
-                mask4 = slim.conv2d(upcnv4, 2, [3, 3], stride=1, scope='mask4',
-                                    normalizer_fn=None, activation_fn=None)
+                mask4 = slim.conv2d(feature_map[3], 1, [1, 1], stride=1, scope='mask4', normalizer_fn=None, activation_fn=None)
+                mask4_up = tf.image.resize_bilinear(mask4, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
 
-                upcnv3 = slim.conv2d_transpose(upcnv4, 64, [3, 3], stride=2, scope='upcnv3')
-                mask3 = slim.conv2d(upcnv3, 2, [3, 3], stride=1, scope='mask3',
-                                    normalizer_fn=None, activation_fn=None)
+                mask3 = tf.sigmoid(mask4_up) * slim.conv2d(feature_map[2], 1, [1, 1], stride=1, scope='mask3', normalizer_fn=None, activation_fn=None)
+                mask3_up = tf.image.resize_bilinear(mask3, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
 
-                upcnv2 = slim.conv2d_transpose(upcnv3, 32, [5, 5], stride=2, scope='upcnv2')
-                mask2 = slim.conv2d(upcnv2, 2, [5, 5], stride=1, scope='mask2',
-                                    normalizer_fn=None, activation_fn=None)
+                mask2 = tf.sigmoid(mask3_up) * slim.conv2d(feature_map[1], 1, [1, 1], stride=1, scope='mask2', normalizer_fn=None, activation_fn=None)
+                mask2_up = tf.image.resize_bilinear(mask2, [np.int(H), np.int(W)])  # B * H * W * 2
 
-                upcnv1 = slim.conv2d_transpose(upcnv2, 16, [7, 7], stride=2, scope='upcnv1')
-                mask1 = slim.conv2d(upcnv1, 2, [7, 7], stride=1, scope='mask1',
-                                    normalizer_fn=None, activation_fn=None)
+                mask1= tf.sigmoid(mask2_up) * slim.conv2d(feature_map[0], 1, [1, 1], stride=1, scope='mask1', normalizer_fn=None, activation_fn=None)
 
         else:
             mask1 = None
@@ -239,11 +231,11 @@ def bilinear_sampler(imgs, coords):
 def vgg_saver():
     #include_list = ['vgg_16/conv1/conv1_1', 'vgg_16/conv1/conv1_2', 'vgg_16/conv2/conv2_1', 'vgg_16/conv2/conv2_2', \
     #                'vgg_16/conv3/conv3_1', 'vgg_16/conv3/conv3_2']
-    #include_list = ['vgg_16/conv1/conv1_1', 'vgg_16/conv1/conv1_2', 'vgg_16/conv2/conv2_1', 'vgg_16/conv2/conv2_2', \
-    #                'vgg_16/conv3/conv3_1', 'vgg_16/conv3/conv3_2', 'vgg_16/conv4/conv4_1', 'vgg_16/conv4/conv4_2']
     include_list = ['vgg_16/conv1/conv1_1', 'vgg_16/conv1/conv1_2', 'vgg_16/conv2/conv2_1', 'vgg_16/conv2/conv2_2', \
-                    'vgg_16/conv3/conv3_1', 'vgg_16/conv3/conv3_2', 'vgg_16/conv4/conv4_1', 'vgg_16/conv4/conv4_2'
-                    'vgg_16/conv5/conv5_1', 'vgg_16/conv5/conv5_2', 'vgg_16/conv5/conv5_3']
+                    'vgg_16/conv3/conv3_1', 'vgg_16/conv3/conv3_2', 'vgg_16/conv4/conv4_1', 'vgg_16/conv4/conv4_2']
+    #include_list = ['vgg_16/conv1/conv1_1', 'vgg_16/conv1/conv1_2', 'vgg_16/conv2/conv2_1', 'vgg_16/conv2/conv2_2', \
+    #                'vgg_16/conv3/conv3_1', 'vgg_16/conv3/conv3_2', 'vgg_16/conv4/conv4_1', 'vgg_16/conv4/conv4_2'
+    #                'vgg_16/conv5/conv5_1', 'vgg_16/conv5/conv5_2', 'vgg_16/conv5/conv5_3']
     variables = slim.get_variables_to_restore(include = include_list)
     variables_to_restore = [v for v in variables]
     saver = tf.train.Saver(variables_to_restore)
