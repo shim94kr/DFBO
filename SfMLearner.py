@@ -31,26 +31,28 @@ class SfMLearner(object):
             tgt_feature_map = vgg_extractor(tgt_image, reuse=False) # batch * H * W * feat_dim
             for i in range(opt.num_source):
                 src_feature_map = vgg_extractor(src_image_stack[:,:,:,3*i:3*(i+1)], reuse=True)
-                motion_map_1 = motion_extractor(src_feature_map, reuse=tf.AUTO_REUSE)
+                if opt.explain_reg_weight > 0:
+                    pred_exp_logit_1 = mask_extractor(src_feature_map[4], do_exp=(opt.explain_reg_weight > 0), reuse=tf.AUTO_REUSE)
                 for j in range(opt.num_scales) :
                     src_feature_map[j] = tf.expand_dims(src_feature_map[j], 0)
-                    motion_map_1[j] = tf.expand_dims(motion_map_1[j], 0)
+                    if opt.explain_reg_weight > 0:
+                        pred_exp_logit_1[j] = tf.expand_dims(pred_exp_logit_1[j], 0)
                 if i==0 :
                     src_feature_map_stack = src_feature_map
-                    motion_map = motion_map_1
+                    if opt.explain_reg_weight > 0:
+                        pred_exp_logits = pred_exp_logit_1
                 else :
                     for j in range(opt.num_scales):
                         src_feature_map_stack[j] = tf.concat([src_feature_map_stack[j], src_feature_map[j]], axis=0)
                         if opt.explain_reg_weight > 0:
-                            motion_map[j] = tf.concat([motion_map[j], motion_map_1[j]], axis=0)
+                            pred_exp_logits[j] = tf.concat([pred_exp_logits[j], pred_exp_logit_1[j]], axis=0)
 
 
         with tf.name_scope("pose_and_explainability_prediction"):
             # pred_poses, pred_exp_logits, pose_exp_net_endpoints = \
-            pred_poses, pred_exp_logits, pose_exp_net_endpoints = \
+            pred_poses,motion_map, pose_exp_net_endpoints = \
                 pose_motion_net(tgt_image,
                              src_image_stack,
-                             do_exp=(opt.explain_reg_weight > 0),
                              is_training=True)
 
         with tf.name_scope("compute_loss"):
@@ -80,16 +82,14 @@ class SfMLearner(object):
                 zero = tf.zeros([1], dtype='float32')
                 for i in range(opt.num_source):
                     if opt.explain_reg_weight > 0:
-                        curr_exp_logits = tf.slice(pred_exp_logits[s],
-                                                   [0, 0, 0, i*2],
-                                                   [-1, -1, -1, 2])
+                        curr_exp_logits = pred_exp_logits[s][i]
                         exp_loss += opt.explain_reg_weight * \
                             self.compute_exp_reg_loss(curr_exp_logits,
                                                       ref_exp_mask)
                         curr_exp = softmax(curr_exp_logits, 3)
 
-                    rowxH = grid_src[:, :, :, 0] + motion_map[s][i][:, :, :, 0]
-                    colxW = grid_src[:, :, :, 1] + motion_map[s][i][:, :, :, 1]
+                    rowxH = grid_src[:, :, :, 0] + motion_map[s][:, :, :, i*2]
+                    colxW = grid_src[:, :, :, 1] + motion_map[s][:, :, :, i*2+1]
                     rowxH_safe = tf.clip_by_value(rowxH, zero, x_max)
                     colxW_safe = tf.clip_by_value(colxW, zero, y_max)
                     grid_tgt_from_src = tf.stack([rowxH_safe, colxW_safe], axis=3)  # B * H * W * 2
@@ -123,7 +123,7 @@ class SfMLearner(object):
                         epipolar_loss = tf.reduce_mean(epipolar_error_rs, axis = 3)
 
                     epipolar_loss_debug += tf.reduce_mean(epipolar_loss)
-                    integrated_loss += tf.reduce_mean(matching_loss + epipolar_loss)
+                    integrated_loss += tf.reduce_mean(matching_loss*s + epipolar_loss*(2**(4-s)))
 
                     if opt.explain_reg_weight > 0:
                         if i==0:
