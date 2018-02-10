@@ -32,7 +32,7 @@ class SfMLearner(object):
             for i in range(opt.num_source):
                 src_feature_map = vgg_extractor(src_image_stack[:,:,:,3*i:3*(i+1)], reuse=True)
                 if opt.explain_reg_weight > 0:
-                    pred_exp_logit_1 = mask_extractor(src_feature_map, do_exp=(opt.explain_reg_weight > 0), reuse=tf.AUTO_REUSE)
+                    pred_exp_logit_1 = mask_extractor(src_feature_map[4], do_exp=(opt.explain_reg_weight > 0), reuse=tf.AUTO_REUSE)
                 for j in range(opt.num_scales) :
                     src_feature_map[j] = tf.expand_dims(src_feature_map[j], 0)
                     if opt.explain_reg_weight > 0:
@@ -121,8 +121,9 @@ class SfMLearner(object):
                         epipolar_loss = tf.reduce_mean(epipolar_error_rs * tf.expand_dims(curr_exp[:,:,:,1], -1), axis = 3)
                     else:
                         epipolar_loss = tf.reduce_mean(epipolar_error_rs, axis = 3)
+
                     epipolar_loss_debug += tf.reduce_mean(epipolar_loss)
-                    integrated_loss += tf.reduce_mean(matching_loss + epipolar_loss)
+                    integrated_loss += tf.reduce_mean(matching_loss*(3**s) + epipolar_loss * (4**(5-s)))
 
                     if opt.explain_reg_weight > 0:
                         if i==0:
@@ -346,3 +347,4 @@ class SfMLearner(object):
             self.saver.save(sess, 
                             os.path.join(checkpoint_dir, model_name),
                             global_step=step)
+
