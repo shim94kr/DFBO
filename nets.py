@@ -40,37 +40,57 @@ def pose_motion_net(tgt_image, src_image_stack, is_training=True):
                 cnv5  = slim.conv2d(cnv4, 256, [3, 3], stride=2, scope='cnv5') # B * 4 * 13 * 256
                 cnv6  = slim.conv2d(cnv5, 256, [3, 3], stride=2, scope='cnv6') # B * 2 * 7 * 256
                 cnv7  = slim.conv2d(cnv6, 256, [3, 3], stride=2, scope='cnv7') # B * 1 * 4 * 256
-                pose_pred = slim.conv2d(cnv7, 6*num_source, [1, 1], scope='pred1', # B * 1 * 4 * 24
+                pose_pred = slim.conv2d(cnv7, 6*(num_source+1), [1, 1], scope='pred1', # B * 1 * 4 * 24
                     stride=1, normalizer_fn=None, activation_fn=None)
                 pose_avg = tf.reduce_mean(pose_pred, [1, 2]) # B * 24
-                pose_final = 0.1 * tf.reshape(pose_avg, [-1, num_source, 6])
+                pose_final = 0.1 * tf.reshape(pose_avg, [-1, num_source+1, 6])
             with tf.variable_scope('shift'):
                 upcnv4 = slim.conv2d_transpose(cnv4, 128, [3, 3], stride=2, scope='upcnv4')
                 icnv4 = tf.concat([cnv3, upcnv4], axis = 3)
                 shift4_in = slim.conv2d(icnv4, 128, [3, 3], stride=1, scope='icnv4')
-                shift4 = DISP_SCALING * slim.conv2d(shift4_in, num_source * 2, [3, 3], stride=1, scope='shift4',
+                shift4_main = DISP_SCALING * slim.conv2d(shift4_in, 2, [3, 3], stride=1, scope='shift4_main',
+                                    normalizer_fn=None, activation_fn=tf.nn.tanh)
+                shift4 = tf.tile(shift4_main, [1, 1, 1, num_source]) + \
+                         DISP_SCALING * slim.conv2d(shift4_in, num_source * 2, [3, 3], stride=1, scope='shift4',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
                 shift4_up = tf.image.resize_bilinear(shift4, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
+                shift4_main_up = tf.image.resize_bilinear(shift4_main, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
 
                 upcnv3 = slim.conv2d_transpose(upcnv4, 64, [3, 3], stride=2, scope='upcnv3')
                 icnv3 = tf.concat([cnv2, upcnv3], axis=3)
                 shift3_in = slim.conv2d(icnv3, 64, [3, 3], stride=1, scope='icnv3')
-                shift3 = shift4_up * 2 + DISP_SCALING * slim.conv2d(shift3_in, num_source * 2, [3, 3], stride=1, scope='shift3',
+                shift3_main = shift4_main_up * 2 + DISP_SCALING * slim.conv2d(shift3_in, 2, [3, 3], stride=1, scope='shift3_main',
+                                    normalizer_fn=None, activation_fn=tf.nn.tanh)
+                shift3 = tf.tile(shift3_main, [1, 1, 1, num_source])\
+                         + shift4_up * 2 + DISP_SCALING * slim.conv2d(shift3_in, num_source * 2, [3, 3], stride=1, scope='shift3',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
                 shift3_up = tf.image.resize_bilinear(shift3, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
+                shift3_main_up = tf.image.resize_bilinear(shift3_main, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
 
                 upcnv2 = slim.conv2d_transpose(upcnv3, 32, [3, 3], stride=2, scope='upcnv2')
                 icnv2 = tf.concat([cnv1, upcnv2], axis=3)
                 shift2_in = slim.conv2d(icnv2, 32, [3, 3], stride=1, scope='icnv2')
-                shift2 = shift3_up * 2 + DISP_SCALING * slim.conv2d(shift2_in, num_source * 2, [5, 5], stride=1, scope='shift2',
+                shift2_main = shift3_main_up * 2 + DISP_SCALING * slim.conv2d(shift2_in, 2, [5, 5], stride=1, scope='shift2_main',
+                                    normalizer_fn=None, activation_fn=tf.nn.tanh)
+                shift2 = tf.tile(shift2_main, [1, 1, 1, num_source]) \
+                         + shift3_up * 2 + DISP_SCALING * slim.conv2d(shift2_in, num_source * 2, [5, 5], stride=1, scope='shift2',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
                 shift2_up = tf.image.resize_bilinear(shift2, [np.int(H), np.int(W)])  # B * H * W * 2
+                shift2_main_up = tf.image.resize_bilinear(shift2_main, [np.int(H), np.int(W)])  # B * H * W * 2
 
                 upcnv1 = slim.conv2d_transpose(upcnv2, 16, [3, 3], stride=2, scope='upcnv1')
                 icnv1 = tf.concat([tgt_image, upcnv1], axis = 3)
                 shift1_in = slim.conv2d(icnv1, 16, [3, 3], stride=1, scope='icnv1')
-                shift1 = shift2_up * 2 + DISP_SCALING * slim.conv2d(shift1_in, num_source * 2, [7, 7], stride=1, scope='shift1',
+                shift1_main = shift2_main_up * 2 + DISP_SCALING * slim.conv2d(shift1_in, 2, [7, 7], stride=1, scope='shift1_main',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
+                shift1 = tf.tile(shift1_main, [1, 1, 1, num_source])\
+                         + shift2_up * 2 + DISP_SCALING * slim.conv2d(shift1_in, num_source * 2, [7, 7], stride=1, scope='shift1',
+                                    normalizer_fn=None, activation_fn=tf.nn.tanh)
+
+                shift1 = tf.concat([shift1, shift1_main], axis = 3)
+                shift2 = tf.concat([shift2, shift2_main], axis = 3)
+                shift3 = tf.concat([shift3, shift3_main], axis = 3)
+                shift4 = tf.concat([shift4, shift4_main], axis = 3)
         end_points = utils.convert_collection_to_dict(end_points_collection)
         #return pose_final, end_points
         return pose_final, [shift1, shift2, shift3, shift4], end_points
@@ -103,23 +123,23 @@ def mask_extractor (feature_map, num_source = SOURCE_NUM, do_exp=False, reuse=Fa
     with slim.arg_scope([slim.conv2d],
                         normalizer_fn=None,
                         activation_fn=None):
-        # There might be dimension mismatch due to uneven down/up-sampling
+        # There might be dimension mismatch due to uneven down/up-samplingz
         if do_exp:
             with tf.variable_scope('exp', reuse=reuse):
                 mask4 = slim.conv2d(feature_map[3], 1, [1, 1], stride=1, scope='mask4')
-                mask4_up = tf.image.resize_bilinear(mask4, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
+                mask4_up = tf.image.resize_nearest_neighbor(mask4, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
 
                 mask3_prev = slim.conv2d(feature_map[2], 1, [1, 1], stride=1, scope='mask3')
                 mask3_plus = tf.clip_by_value(mask3_prev, clip_value_min = 0, clip_value_max = 999)
                 mask3_minus = tf.clip_by_value(mask3_prev, clip_value_max = 0, clip_value_min = -999)
                 mask3 = tf.sigmoid(mask4_up) * mask3_plus + (1 - tf.sigmoid(mask4_up)) * mask3_minus
-                mask3_up = tf.image.resize_bilinear(mask3, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
+                mask3_up = tf.image.resize_nearest_neighbor(mask3, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
 
                 mask2_prev = slim.conv2d(feature_map[1], 1, [1, 1], stride=1, scope='mask2')
                 mask2_plus = tf.clip_by_value(mask2_prev, clip_value_min = 0, clip_value_max = 999)
                 mask2_minus = tf.clip_by_value(mask2_prev, clip_value_max = 0, clip_value_min = -999)
                 mask2 = tf.sigmoid(mask3_up) * mask2_plus + (1 - tf.sigmoid(mask3_up)) * mask2_minus
-                mask2_up = tf.image.resize_bilinear(mask2, [np.int(H), np.int(W)])  # B * H * W * 2
+                mask2_up = tf.image.resize_nearest_neighbor(mask2, [np.int(H), np.int(W)])  # B * H * W * 2
 
                 mask1_prev = slim.conv2d(feature_map[0], 1, [1, 1], stride=1, scope='mask1')
                 mask1_plus = tf.clip_by_value(mask1_prev, clip_value_min = 0, clip_value_max = 999)
