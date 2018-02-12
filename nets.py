@@ -33,6 +33,7 @@ def pose_motion_net(tgt_image, src_image_stack, is_training=True):
             # cnv1 to cnv5b are shared between pose and explainability prediction
             # Pose specific layers
             with tf.variable_scope('pose'):
+                """
                 cnv1  = slim.conv2d(inputs,16,  [7, 7], stride=2, scope='cnv1') # B * 64 * 208 * 16
                 cnv2  = slim.conv2d(cnv1, 32,  [5, 5], stride=2, scope='cnv2') # B * 32 * 104 * 32
                 cnv3  = slim.conv2d(cnv2, 64,  [3, 3], stride=2, scope='cnv3') # B * 16 * 52 * 64
@@ -40,13 +41,44 @@ def pose_motion_net(tgt_image, src_image_stack, is_training=True):
                 cnv5  = slim.conv2d(cnv4, 256, [3, 3], stride=2, scope='cnv5') # B * 4 * 13 * 256
                 cnv6  = slim.conv2d(cnv5, 256, [3, 3], stride=2, scope='cnv6') # B * 2 * 7 * 256
                 cnv7  = slim.conv2d(cnv6, 256, [3, 3], stride=2, scope='cnv7') # B * 1 * 4 * 256
-                pose_pred = slim.conv2d(cnv7, 6*(num_source+1), [1, 1], scope='pred1', # B * 1 * 4 * 24
+                """
+                cnv1 = slim.conv2d(inputs, 32, [7, 7], stride=2, scope='cnv1')
+                cnv1b = slim.conv2d(cnv1, 32, [7, 7], stride=1, scope='cnv1b')
+                cnv2 = slim.conv2d(cnv1b, 64, [5, 5], stride=2, scope='cnv2')
+                cnv2b = slim.conv2d(cnv2, 64, [5, 5], stride=1, scope='cnv2b')
+                cnv3 = slim.conv2d(cnv2b, 128, [3, 3], stride=2, scope='cnv3')
+                cnv3b = slim.conv2d(cnv3, 128, [3, 3], stride=1, scope='cnv3b')
+                cnv4 = slim.conv2d(cnv3b, 256, [3, 3], stride=2, scope='cnv4')
+                cnv4b = slim.conv2d(cnv4, 256, [3, 3], stride=1, scope='cnv4b')
+                cnv5 = slim.conv2d(cnv4b, 512, [3, 3], stride=2, scope='cnv5')
+                cnv5b = slim.conv2d(cnv5, 512, [3, 3], stride=1, scope='cnv5b')
+                cnv6 = slim.conv2d(cnv5b, 512, [3, 3], stride=2, scope='cnv6')
+                cnv6b = slim.conv2d(cnv6, 512, [3, 3], stride=1, scope='cnv6b')
+                cnv7 = slim.conv2d(cnv6b, 512, [3, 3], stride=2, scope='cnv7')
+                cnv7b = slim.conv2d(cnv7, 512, [3, 3], stride=1, scope='cnv7b')
+                pose_pred = slim.conv2d(cnv7b, 6*(num_source+1), [1, 1], scope='pred1', # B * 1 * 4 * 24
                     stride=1, normalizer_fn=None, activation_fn=None)
                 pose_avg = tf.reduce_mean(pose_pred, [1, 2]) # B * 24
                 pose_final = 0.1 * tf.reshape(pose_avg, [-1, num_source+1, 6])
             with tf.variable_scope('shift'):
-                upcnv4 = slim.conv2d_transpose(cnv4, 128, [3, 3], stride=2, scope='upcnv4')
-                icnv4 = tf.concat([cnv3, upcnv4], axis = 3)
+                upcnv7 = slim.conv2d_transpose(cnv7b, 512, [3, 3], stride=2, scope='upcnv7')
+                # There might be dimension mismatch due to uneven down/up-sampling
+                upcnv7 = resize_like(upcnv7, cnv6b)
+                i7_in = tf.concat([upcnv7, cnv6b], axis=3)
+                icnv7 = slim.conv2d(i7_in, 512, [3, 3], stride=1, scope='icnv7')
+
+                upcnv6 = slim.conv2d_transpose(icnv7, 512, [3, 3], stride=2, scope='upcnv6')
+                upcnv6 = resize_like(upcnv6, cnv5b)
+                i6_in = tf.concat([upcnv6, cnv5b], axis=3)
+                icnv6 = slim.conv2d(i6_in, 512, [3, 3], stride=1, scope='icnv6')
+
+                upcnv5 = slim.conv2d_transpose(icnv6, 256, [3, 3], stride=2, scope='upcnv5')
+                upcnv5 = resize_like(upcnv5, cnv4b)
+                i5_in = tf.concat([upcnv5, cnv4b], axis=3)
+                icnv5 = slim.conv2d(i5_in, 256, [3, 3], stride=1, scope='icnv5')
+
+                upcnv4 = slim.conv2d_transpose(icnv5, 128, [3, 3], stride=2, scope='upcnv4')
+                icnv4 = tf.concat([upcnv4, cnv3b], axis = 3)
                 shift4_in = slim.conv2d(icnv4, 128, [3, 3], stride=1, scope='icnv4')
                 shift4_main = DISP_SCALING * slim.conv2d(shift4_in, 2, [3, 3], stride=1, scope='shift4_main',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
@@ -57,7 +89,7 @@ def pose_motion_net(tgt_image, src_image_stack, is_training=True):
                 shift4_main_up = tf.image.resize_bilinear(shift4_main, [np.int(H / 4), np.int(W / 4)])  # B * H * W * 2
 
                 upcnv3 = slim.conv2d_transpose(upcnv4, 64, [3, 3], stride=2, scope='upcnv3')
-                icnv3 = tf.concat([cnv2, upcnv3], axis=3)
+                icnv3 = tf.concat([upcnv3, cnv2b], axis=3)
                 shift3_in = slim.conv2d(icnv3, 64, [3, 3], stride=1, scope='icnv3')
                 shift3_main = shift4_main_up * 2 + DISP_SCALING * slim.conv2d(shift3_in, 2, [3, 3], stride=1, scope='shift3_main',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
@@ -68,7 +100,7 @@ def pose_motion_net(tgt_image, src_image_stack, is_training=True):
                 shift3_main_up = tf.image.resize_bilinear(shift3_main, [np.int(H / 2), np.int(W / 2)])  # B * H * W * 2
 
                 upcnv2 = slim.conv2d_transpose(upcnv3, 32, [3, 3], stride=2, scope='upcnv2')
-                icnv2 = tf.concat([cnv1, upcnv2], axis=3)
+                icnv2 = tf.concat([upcnv2, cnv1b], axis=3)
                 shift2_in = slim.conv2d(icnv2, 32, [3, 3], stride=1, scope='icnv2')
                 shift2_main = shift3_main_up * 2 + DISP_SCALING * slim.conv2d(shift2_in, 2, [5, 5], stride=1, scope='shift2_main',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)
@@ -79,7 +111,7 @@ def pose_motion_net(tgt_image, src_image_stack, is_training=True):
                 shift2_main_up = tf.image.resize_bilinear(shift2_main, [np.int(H), np.int(W)])  # B * H * W * 2
 
                 upcnv1 = slim.conv2d_transpose(upcnv2, 16, [3, 3], stride=2, scope='upcnv1')
-                icnv1 = tf.concat([tgt_image, upcnv1], axis = 3)
+                icnv1 = tf.concat([upcnv1], axis = 3)
                 shift1_in = slim.conv2d(icnv1, 16, [3, 3], stride=1, scope='icnv1')
                 shift1_main = shift2_main_up * 2 + DISP_SCALING * slim.conv2d(shift1_in, 2, [7, 7], stride=1, scope='shift1_main',
                                     normalizer_fn=None, activation_fn=tf.nn.tanh)

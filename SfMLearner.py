@@ -77,23 +77,25 @@ class SfMLearner(object):
                     [int(opt.img_height/(2**s)), int(opt.img_width/(2**s))])
 
                 tgt_feature_norm = tf.nn.l2_normalize(tgt_feature_map[s], 3)
-                y_max = tf.cast(H - 1, 'float32')
-                x_max = tf.cast(W - 1, 'float32')
-                zero = tf.zeros([1], dtype='float32')
+                y_max = tf.constant(H - 1, dtype = tf.float32, shape = [batch_size, H, W])
+                x_max = tf.constant(W - 1, dtype = tf.float32, shape = [batch_size, H, W])
+                zero = tf.zeros([batch_size, H, W], dtype='float32')
                 for i in range(opt.num_source + 1):
                     if opt.explain_reg_weight > 0:
                         if i < opt.num_source:
-                            curr_exp = tf.sigmoid(pred_exp_logits[s][i])
-                        else: curr_exp = tf.ones_like(pred_exp_logits[s][0])
-                        exp_loss += opt.explain_reg_weight * \
-                            self.compute_exp_reg_loss(curr_exp,
-                                                      ref_exp_mask)
+                            curr_exp = tf.sigmoid(pred_exp_logits[s][i][:,:,:,0])
+                        else: curr_exp = tf.ones_like(pred_exp_logits[s][0][:,:,:,0])
 
                     rowxH = grid_src[:, :, :, 0] + motion_map[s][:, :, :, i*2]
                     colxW = grid_src[:, :, :, 1] + motion_map[s][:, :, :, i*2+1]
-                    rowxH_safe = tf.clip_by_value(rowxH, zero, x_max)
-                    colxW_safe = tf.clip_by_value(colxW, zero, y_max)
-                    grid_tgt_from_src = tf.stack([rowxH_safe, colxW_safe], axis=3)  # B * H * W * 2
+                    curr_exp = tf.where((rowxH<zero) | (rowxH>x_max) | (colxW<zero) | (colxW>y_max), zero, curr_exp)
+
+                    if opt.explain_reg_weight > 0:
+                        exp_loss += opt.explain_reg_weight * \
+                                    self.compute_exp_reg_loss(curr_exp,
+                                                              ref_exp_mask)
+
+                    grid_tgt_from_src = tf.stack([rowxH, colxW], axis=3)  # B * H * W * 2
                     if i < opt.num_source :
                         src_feature_norm = tf.nn.l2_normalize(src_feature_map_stack[s][i], 3)  # B * H * W * feat_dim
                     else:
@@ -102,7 +104,7 @@ class SfMLearner(object):
                     matching_error = tf.abs(tgt_feature_from_src - src_feature_norm) # s, batch * feat_num * feat_dim -> B * feat_num
 
                     if opt.explain_reg_weight > 0:
-                        matching_loss = tf.reduce_mean(matching_error * tf.expand_dims(curr_exp[:,:,:,0], -1), axis = 3)
+                        matching_loss = tf.reduce_mean(matching_error * tf.expand_dims(curr_exp, -1), axis = 3)
                     else:
                         matching_loss = tf.reduce_mean(matching_error, axis = 3)
                     matching_loss_debug += tf.reduce_mean(matching_loss)
@@ -116,24 +118,25 @@ class SfMLearner(object):
                     fundamental_matrix = tf.matmul(tf.matmul(tf.transpose(inv_intrinsic, [0, 2, 1]), essential_matrix), inv_intrinsic) # B * 3 * 3
 
                     grid_tgt_cct1 = tf.concat([grid_tgt_from_src, tf.ones([batch_size, H, W, 1])], axis = 3)
+                    #grid_tgt_cct1 = tf.stack([rowxH, colxW, tf.ones([batch_size, H, W])], axis=3)
                     grid_tgt_rs = tf.reshape(grid_tgt_cct1, [batch_size, H*W, 3])
-                    epiline1 = tf.abs(tf.matmul(grid_src_rs, fundamental_matrix)) # B * HW * 3
-                    epipolar_error = epiline1 * grid_tgt_rs # B * HW * 3
+                    epiline1 = tf.matmul(grid_src_rs, fundamental_matrix) # B * HW * 3
+                    epipolar_error = tf.abs(epiline1 * grid_tgt_rs) # B * HW * 3
                     epipolar_error_rs = tf.reshape(epipolar_error, [batch_size, H, W, 3])
 
                     if opt.explain_reg_weight > 0:
-                        epipolar_loss = tf.reduce_mean(epipolar_error_rs * tf.expand_dims(curr_exp[:,:,:,0], -1), axis = 3)
+                        epipolar_loss = tf.reduce_mean(epipolar_error_rs * tf.expand_dims(curr_exp, -1), axis = 3)
                     else:
                         epipolar_loss = tf.reduce_mean(epipolar_error_rs, axis = 3)
 
                     epipolar_loss_debug += tf.reduce_mean(epipolar_loss)
-                    integrated_loss += tf.reduce_mean(matching_loss + epipolar_loss*(2**(4-s)))
+                    integrated_loss += tf.reduce_mean(matching_loss + epipolar_loss*(8**(3-s)))
 
                     if opt.explain_reg_weight > 0:
                         if i==0:
-                            exp_mask_stack = tf.expand_dims(curr_exp[:,:,:,0], -1)
+                            exp_mask_stack = tf.expand_dims(curr_exp, -1)
                         else:
-                            exp_mask_stack = tf.concat([exp_mask_stack, tf.expand_dims(curr_exp[:,:,:,0], -1)], axis=3)
+                            exp_mask_stack = tf.concat([exp_mask_stack, tf.expand_dims(curr_exp, -1)], axis=3)
                 tgt_image_all.append(curr_tgt_image)
                 src_image_stack_all.append(curr_src_image_stack)
                 if opt.explain_reg_weight > 0:
@@ -174,7 +177,7 @@ class SfMLearner(object):
             self.exp_mask_stack_all = exp_mask_stack_all
 
     def compute_exp_reg_loss(self, pred, ref):
-        pred = tf.concat([1-pred, pred], axis=3)
+        pred = tf.stack([1-pred, pred], axis=3)
         l = tf.nn.softmax_cross_entropy_with_logits(
             labels=tf.reshape(ref, [-1, 2]),
             logits=tf.reshape(pred, [-1, 2]))
@@ -228,7 +231,7 @@ class SfMLearner(object):
     def train(self, opt):
         opt.num_source = opt.seq_length - 1
         # TODO: currently fixed to 4
-        opt.num_scales = 3
+        opt.num_scales = 4
         self.opt = opt
         self.build_train_graph()
         self.collect_summaries()
