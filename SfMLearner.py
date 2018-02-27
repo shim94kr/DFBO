@@ -56,17 +56,20 @@ class SfMLearner(object):
                              is_training=True)
 
         with tf.name_scope("compute_loss"):
-            epipolar_loss_debug = 0
-            matching_loss_debug = 0
+            epipolar_loss_debug = [0,0,0,0,0]
+            matching_loss_debug = [0,0,0,0,0]
+            guidance_loss_debug = [0,0,0]
+            exp_loss_debug = [0,0,0,0]
+            epipolar_weight = [1., 2., 4., 32., 64.]
             exp_loss = 0
             integrated_loss = 0
+            guidance_loss = 0
             tgt_image_all = []
             src_image_stack_all = []
             exp_mask_stack_all = []
 
-            for s in range(opt.num_scales):
-                if opt.explain_reg_weight > 0:
-                    ref_exp_mask = self.get_reference_explain_mask(s)
+            for s in range(opt.num_scales-1, -1, -1):
+                ref_exp_mask = self.get_reference_explain_mask(s)
                 batch_size, H, W, feat_dim = tgt_feature_map[s].get_shape().as_list()
                 grid_src = make_grid(batch_size, H, W)
                 grid_src_rs = tf.reshape(grid_src, [batch_size, H*W, 3])
@@ -80,34 +83,37 @@ class SfMLearner(object):
                 y_max = tf.constant(H - 1, dtype = tf.float32, shape = [batch_size, H, W])
                 x_max = tf.constant(W - 1, dtype = tf.float32, shape = [batch_size, H, W])
                 zero = tf.zeros([batch_size, H, W], dtype='float32')
-                for i in range(opt.num_source + 1):
-                    if opt.explain_reg_weight > 0:
-                        if i < opt.num_source:
-                            curr_exp = tf.sigmoid(pred_exp_logits[s][i][:,:,:,0])
-                        else: curr_exp = tf.ones_like(pred_exp_logits[s][0][:,:,:,0])
 
+                if s < opt.num_scales-1:
+                    motion_up = tf.image.resize_bilinear(motion_map[s + 1], [H, W])
+                    #motion_diff = tf.abs(motion_up - motion_map[s]) / tf.reduce_max(motion_map[s])
+                    motion_map[s] = motion_map[s] + motion_up * 2  # B * H * W * 2
+
+                for i in range(opt.num_source):
                     rowxH = grid_src[:, :, :, 0] + motion_map[s][:, :, :, i*2]
                     colxW = grid_src[:, :, :, 1] + motion_map[s][:, :, :, i*2+1]
-                    curr_exp = tf.where((rowxH<zero) | (rowxH>x_max) | (colxW<zero) | (colxW>y_max), zero, curr_exp)
-
                     if opt.explain_reg_weight > 0:
+                        curr_exp = tf.sigmoid(pred_exp_logits[s][i][:,:,:,0])
                         exp_loss += opt.explain_reg_weight * \
                                     self.compute_exp_reg_loss(curr_exp,
                                                               ref_exp_mask)
+                        exp_loss_debug[s] += exp_loss
+                    else :
+                        curr_exp = ref_exp_mask[:, :, :, 1]
+
+                    curr_exp = tf.where((rowxH<zero) | (rowxH>x_max) | (colxW<zero) | (colxW>y_max), zero, curr_exp)
 
                     grid_tgt_from_src = tf.stack([rowxH, colxW], axis=3)  # B * H * W * 2
-                    if i < opt.num_source :
-                        src_feature_norm = tf.nn.l2_normalize(src_feature_map_stack[s][i], 3)  # B * H * W * feat_dim
-                    else:
-                        src_feature_norm = tgt_feature_norm
+                    src_feature_norm = tf.nn.l2_normalize(src_feature_map_stack[s][i], 3)  # B * H * W * feat_dim
                     tgt_feature_from_src = bilinear_sampler(tgt_feature_norm, grid_tgt_from_src)
                     matching_error = tf.abs(tgt_feature_from_src - src_feature_norm) # s, batch * feat_num * feat_dim -> B * feat_num
 
-                    if opt.explain_reg_weight > 0:
-                        matching_loss = tf.reduce_mean(matching_error * tf.expand_dims(curr_exp, -1), axis = 3)
-                    else:
-                        matching_loss = tf.reduce_mean(matching_error, axis = 3)
-                    matching_loss_debug += tf.reduce_mean(matching_loss)
+                    matching_loss = tf.reduce_mean(matching_error * tf.expand_dims(curr_exp, -1), axis = 3)
+                    matching_loss_debug[s] += tf.reduce_mean(matching_loss)
+
+                    #if s < opt.num_scales - 1:
+                    #    guidance_loss += opt.guidance_weight * tf.reduce_mean(motion_diff[:, :, :, i*2:i*2+2] * tf.expand_dims(curr_exp, -1))
+                    #    guidance_loss_debug[s] += tf.reduce_mean(guidance_loss)
 
                     rot1 = pose_vec2mat(pred_poses[:, i, :])[:, 0, :3]  # B * 3
                     rot2 = pose_vec2mat(pred_poses[:, i, :])[:, 1, :3]  # B * 3
@@ -123,34 +129,42 @@ class SfMLearner(object):
                     epiline1 = tf.matmul(grid_src_rs, fundamental_matrix) # B * HW * 3
                     epipolar_error = tf.abs(epiline1 * grid_tgt_rs) # B * HW * 3
                     epipolar_error_rs = tf.reshape(epipolar_error, [batch_size, H, W, 3])
-
+                    """
                     if opt.explain_reg_weight > 0:
                         epipolar_loss = tf.reduce_mean(epipolar_error_rs * tf.expand_dims(curr_exp, -1), axis = 3)
                     else:
                         epipolar_loss = tf.reduce_mean(epipolar_error_rs, axis = 3)
+                    """
+                    epipolar_loss = tf.reduce_mean(epipolar_error_rs, axis=3)
+                    epipolar_loss_debug[s] += tf.reduce_mean(epipolar_loss) * epipolar_weight[s]
 
-                    epipolar_loss_debug += tf.reduce_mean(epipolar_loss)
-                    integrated_loss += tf.reduce_mean(matching_loss + epipolar_loss*(8**(3-s)))
+                    integrated_loss += tf.reduce_mean(matching_loss)
+                    #if s < opt.num_scales - 1:
+                    #    integrated_loss += guidance_loss
 
-                    if opt.explain_reg_weight > 0:
-                        if i==0:
-                            exp_mask_stack = tf.expand_dims(curr_exp, -1)
-                        else:
-                            exp_mask_stack = tf.concat([exp_mask_stack, tf.expand_dims(curr_exp, -1)], axis=3)
-                tgt_image_all.append(curr_tgt_image)
-                src_image_stack_all.append(curr_src_image_stack)
-                if opt.explain_reg_weight > 0:
-                    exp_mask_stack_all.append(exp_mask_stack)
+                    if i==0:
+                        exp_mask_stack = tf.expand_dims(curr_exp, -1)
+                    else:
+                        exp_mask_stack = tf.concat([exp_mask_stack, tf.expand_dims(curr_exp, -1)], axis=3)
 
-        total_loss = opt.int_loss * integrated_loss
+                tgt_image_all.insert(0, curr_tgt_image)
+                src_image_stack_all.insert(0, curr_src_image_stack)
+                exp_mask_stack_all.insert(0, exp_mask_stack)
+
+        total_loss = opt.int_loss * integrated_loss + tf.reduce_mean(epipolar_loss_debug)
+        #total_loss = opt.int_loss * integrated_loss + guidance_loss
         if opt.explain_reg_weight > 0:
             total_loss += exp_loss
 
         with tf.name_scope("train_op"):
             #train_vars = [var for var in tf.trainable_variables() if not 'vgg_16' in var.name]
             #train_vars = [var for var in tf.trainable_variables() if not 'attention' in var.name]
-            train_vars = [var for var in tf.trainable_variables()]
-            optim = tf.train.GradientDescentOptimizer(opt.learning_rate)
+            train_vars = [var for var in tf.trainable_variables() if not (('vgg_16/conv1' in var.name) | ('vgg_16/conv2' in var.name))]
+            global_step = tf.Variable(0, trainable=False)
+            boundaries = [100000, 200000, 300000, 400000, 800000]
+            values = [opt.learning_rate, opt.learning_rate/2, opt.learning_rate/4, opt.learning_rate/8, opt.learning_rate/16, opt.learning_rate/32]
+            learning_rate = tf.train.piecewise_constant(global_step, boundaries, values)
+            optim = tf.train.GradientDescentOptimizer(learning_rate)
             #optim = tf.train.AdamOptimizer(opt.learning_rate, opt.beta1)
             self.grads_and_vars = optim.compute_gradients(total_loss,
                                                          var_list=train_vars)
@@ -166,15 +180,15 @@ class SfMLearner(object):
         self.pred_poses = pred_poses
         self.steps_per_epoch = loader.steps_per_epoch
         self.total_loss = total_loss
-        self.exp_loss = exp_loss
+        self.exp_loss = exp_loss_debug
+        #self.guidance_loss = guidance_loss_debug
         self.motion_map = motion_map
         self.epipolar_loss_debug = epipolar_loss_debug
         self.matching_loss_debug = matching_loss_debug
         self.integrated_loss = integrated_loss
         self.tgt_image_all = tgt_image_all
         self.src_image_stack_all = src_image_stack_all
-        if opt.explain_reg_weight > 0:
-            self.exp_mask_stack_all = exp_mask_stack_all
+        self.exp_mask_stack_all = exp_mask_stack_all
 
     def compute_exp_reg_loss(self, pred, ref):
         pred = tf.stack([1-pred, pred], axis=3)
@@ -198,9 +212,18 @@ class SfMLearner(object):
         opt = self.opt
         tf.summary.scalar("total_loss", self.total_loss)
         tf.summary.scalar("integrated_loss", self.integrated_loss)
-        tf.summary.scalar("exp_loss", self.exp_loss)
-        tf.summary.scalar("epipolar_loss_debug", self.epipolar_loss_debug)
-        tf.summary.scalar("matching_loss_debug", self.matching_loss_debug)
+        for s in range(opt.num_scales):
+            #if s < opt.num_scales-1 :
+            #    tf.summary.scalar("guidance_loss_%d" % s, self.guidance_loss[s])
+            tf.summary.scalar("epipolar_loss_debug_%d" % s, self.epipolar_loss_debug[s])
+            tf.summary.scalar("matching_loss_debug_%d" % s, self.matching_loss_debug[s])
+            if opt.explain_reg_weight > 0:
+                tf.summary.scalar("exp_loss_%d" % s, self.exp_loss[s])
+        #tf.summary.scalar("guidance_loss", sum(self.guidance_loss))
+        tf.summary.scalar("epipolar_loss_debug", sum(self.epipolar_loss_debug))
+        tf.summary.scalar("matching_loss_debug", sum(self.matching_loss_debug))
+        if opt.explain_reg_weight > 0:
+            tf.summary.scalar("exp_loss", sum(self.exp_loss))
         tf.summary.histogram("tx", self.pred_poses[:,:opt.num_source,0])
         tf.summary.histogram("ty", self.pred_poses[:,:opt.num_source,1])
         tf.summary.histogram("tz", self.pred_poses[:,:opt.num_source,2])
@@ -218,10 +241,9 @@ class SfMLearner(object):
                 tf.summary.image(
                     'scale%d_source_image_%d' % (s, i),
                     self.deprocess_image(self.src_image_stack_all[s][:1, :, :, i*3:(i+1)*3]))
-                if opt.explain_reg_weight > 0:
-                    tf.summary.image(
-                        'scale%d_exp_mask_%d' % (s, i),
-                        tf.expand_dims(self.exp_mask_stack_all[s][:1,:,:,i], -1))
+                tf.summary.image(
+                    'scale%d_exp_mask_%d' % (s, i),
+                    tf.expand_dims(self.exp_mask_stack_all[s][:1,:,:,i], -1))
 
         for var in tf.trainable_variables():
             tf.summary.histogram(var.op.name + "/values", var)
@@ -231,7 +253,7 @@ class SfMLearner(object):
     def train(self, opt):
         opt.num_source = opt.seq_length - 1
         # TODO: currently fixed to 4
-        opt.num_scales = 4
+        opt.num_scales = 5
         self.opt = opt
         self.build_train_graph()
         self.collect_summaries()
